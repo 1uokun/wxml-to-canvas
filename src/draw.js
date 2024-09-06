@@ -114,6 +114,7 @@ class Draw {
       color = '#000',
       lineHeight = '1.4em',
       fontSize = 14,
+      fontWeight='normal',
       textAlign = 'left',
       verticalAlign = 'top',
       backgroundColor = 'transparent'
@@ -126,7 +127,8 @@ class Draw {
 
     ctx.save()
     ctx.textBaseline = 'top'
-    ctx.font = `${fontSize}px sans-serif`
+    // 支持 fontWeight
+    ctx.font = `${fontWeight} ${fontSize}px sans-serif`
     ctx.textAlign = textAlign
 
     // 背景色
@@ -135,6 +137,12 @@ class Draw {
 
     // 文字颜色
     ctx.fillStyle = color
+
+    // 如果 text 未指定 width，则默认取文字宽度
+    if (w === 0) {
+      w = ctx.measureText(text).width
+      this.offsetX = (this.offsetX || 0) + w
+    }
 
     // 水平布局
     switch (textAlign) {
@@ -149,7 +157,7 @@ class Draw {
       default: break
     }
 
-    const textWidth = ctx.measureText(text).width
+    const textWidth = Number(ctx.measureText(text).width.toFixed(1))
     const actualHeight = Math.ceil(textWidth / w) * lineHeight
     let paddingTop = Math.ceil((h - actualHeight) / 2)
     if (paddingTop < 0) paddingTop = 0
@@ -172,6 +180,7 @@ class Draw {
     // 不超过一行
     if (textWidth <= w) {
       ctx.fillText(text, x, y + inlinePaddingTop)
+      this.drawTextDecoration(text, x, y, style)
       return
     }
 
@@ -181,15 +190,26 @@ class Draw {
 
     // 逐行绘制
     let line = ''
+    // 支持 ellipsis
+    const ellipsis = '...'
     for (const ch of chars) {
       const testLine = line + ch
       const testWidth = ctx.measureText(testLine).width
 
       if (testWidth > w) {
-        ctx.fillText(line, x, y + inlinePaddingTop)
-        y += lineHeight
-        line = ch
-        if ((y + lineHeight) > (_y + h)) break
+        if (y + lineHeight * 2 > _y + h) {
+          while (ctx.measureText(line + ellipsis).width > w) {
+            line = line.slice(0, -1)
+          }
+          ctx.fillText(line + ellipsis, x, y + inlinePaddingTop)
+          this.drawTextDecoration(line, x, y, style)
+          break
+        } else {
+          ctx.fillText(line, x, y + inlinePaddingTop)
+          this.drawTextDecoration(line, x, y, style)
+          y += lineHeight
+          line = ch
+        }
       } else {
         line = testLine
       }
@@ -198,18 +218,65 @@ class Draw {
     // 避免溢出
     if ((y + lineHeight) <= (_y + h)) {
       ctx.fillText(line, x, y + inlinePaddingTop)
+      this.drawTextDecoration(line, x, y, style)
     }
     ctx.restore()
+  }
+
+  // 支持 textDecoration、textDecorationColor
+  drawTextDecoration(text, x, y, style) {
+    const ctx = this.ctx
+    let {
+      lineHeight = '1.4em',
+      fontSize = 14,
+      color,
+      textDecoration,
+      textDecorationColor = color,
+    } = style
+    if (typeof lineHeight === 'string') { // 2em
+      lineHeight = Math.ceil(parseFloat(lineHeight.replace('em')) * fontSize)
+    }
+    if (textDecoration === 'line-through') {
+      const middle = y + lineHeight / 2 + 1
+      ctx.beginPath()
+      ctx.moveTo(x, middle)
+      ctx.lineTo(x + ctx.measureText(text).width, middle)
+      ctx.strokeStyle = textDecorationColor
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
   }
 
   async drawNode(element) {
     const {layoutBox, computedStyle, name} = element
     const {src, text} = element.attributes
+
+    const shouldClearOffsetX = (element)=> {
+      if(!element) {
+        return true
+      }
+      if (element.id === this.offsetXParentId) {
+        return false
+      }
+      return shouldClearOffsetX(element.parent)
+    }
+
+    if (shouldClearOffsetX(element)) {
+      this.offsetX = undefined
+      this.offsetXParentId = undefined
+    } else if (this.offsetX !== undefined) {
+      layoutBox.left += this.offsetX
+    }
     if (name === 'view') {
       this.drawView(layoutBox, computedStyle)
     } else if (name === 'image') {
       await this.drawImage(src, layoutBox, computedStyle)
     } else if (name === 'text') {
+      // 累计偏移量，用于 text 未指定宽度时，兄弟节点的定位
+      if (element.style.width === undefined && this.offsetX === undefined) {
+        this.offsetX = 0
+        this.offsetXParentId = element.parent.id
+      }
       this.drawText(text, layoutBox, computedStyle)
     }
     const childs = Object.values(element.children)
